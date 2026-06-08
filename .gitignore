@@ -67,3 +67,12 @@ monitoring/grafana/data/
 
 # Alembic
 migrations/versions/__pycache__/
+*.env
+.env.*
+*.pem
+*.key
+*.tfvars
+terraform.exe
+.terraform/
+*.tfstate*
+node_modules/
