@@ -1,0 +1,183 @@
+# =============================================================================
+# TaskForge — Docker Compose (Full Local Stack)
+# =============================================================================
+
+services:
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  taskforge-db:
+    image: postgres:16-alpine
+    container_name: taskforge-db
+    environment:
+      POSTGRES_USER: taskforge
+      POSTGRES_PASSWORD: taskforge_secret
+      POSTGRES_DB: taskforge
+    ports:
+      - "5432:5432"
+    volumes:
+      - taskforge-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U taskforge -d taskforge"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - taskforge-net
+
+  # ── Redis ───────────────────────────────────────────────────────────────────
+  taskforge-redis:
+    image: redis:7-alpine
+    container_name: taskforge-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - taskforge-net
+
+  # ── FastAPI Service ─────────────────────────────────────────────────────────
+  taskforge-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: taskforge:latest
+    container_name: taskforge-api
+    command: >
+      sh -c "
+        sleep 3 &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2 --log-level info
+      "
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://taskforge:taskforge_secret@taskforge-db:5432/taskforge
+      DATABASE_URL_SYNC: postgresql+psycopg2://taskforge:taskforge_secret@taskforge-db:5432/taskforge
+      CELERY_BROKER_URL: redis://taskforge-redis:6379/0
+      CELERY_RESULT_BACKEND: redis://taskforge-redis:6379/1
+      REDIS_HOST: taskforge-redis
+      REDIS_PORT: 6379
+      MAX_RETRIES: 5
+      RETRY_BASE_DELAY: 2
+      DLQ_QUEUE_NAME: taskforge-dlq
+      PROMETHEUS_MULTIPROC_DIR: /prometheus_multiproc
+    volumes:
+      - taskforge-multiproc:/prometheus_multiproc
+    depends_on:
+      taskforge-db:
+        condition: service_healthy
+      taskforge-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+    networks:
+      - taskforge-net
+
+  # ── Celery Worker ───────────────────────────────────────────────────────────
+  taskforge-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: taskforge:latest
+    container_name: taskforge-worker
+    command: >
+      celery -A worker.celery_app:celery_app worker
+        --loglevel=info
+        --concurrency=4
+        --queues=high,default,low
+        --hostname=worker@%h
+    environment:
+      DATABASE_URL: postgresql+asyncpg://taskforge:taskforge_secret@taskforge-db:5432/taskforge
+      DATABASE_URL_SYNC: postgresql+psycopg2://taskforge:taskforge_secret@taskforge-db:5432/taskforge
+      CELERY_BROKER_URL: redis://taskforge-redis:6379/0
+      CELERY_RESULT_BACKEND: redis://taskforge-redis:6379/1
+      REDIS_HOST: taskforge-redis
+      REDIS_PORT: 6379
+      MAX_RETRIES: 5
+      RETRY_BASE_DELAY: 2
+      DLQ_QUEUE_NAME: taskforge-dlq
+      PROMETHEUS_MULTIPROC_DIR: /prometheus_multiproc
+    volumes:
+      - taskforge-multiproc:/prometheus_multiproc
+    depends_on:
+      taskforge-db:
+        condition: service_healthy
+      taskforge-redis:
+        condition: service_healthy
+    networks:
+      - taskforge-net
+
+  # ── Flower (Celery Monitoring UI) ──────────────────────────────────────────
+  taskforge-flower:
+    image: mher/flower:2.0
+    container_name: taskforge-flower
+    command: celery --broker=redis://taskforge-redis:6379/0 flower --port=5555
+    ports:
+      - "5555:5555"
+    environment:
+      CELERY_BROKER_URL: redis://taskforge-redis:6379/0
+    depends_on:
+      taskforge-redis:
+        condition: service_healthy
+    networks:
+      - taskforge-net
+
+  # ── Prometheus ──────────────────────────────────────────────────────────────
+  taskforge-prometheus:
+    image: prom/prometheus:latest
+    container_name: taskforge-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - taskforge-promdata:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+    depends_on:
+      taskforge-api:
+        condition: service_healthy
+    networks:
+      - taskforge-net
+
+  # ── Grafana ─────────────────────────────────────────────────────────────────
+  taskforge-grafana:
+    image: grafana/grafana:latest
+    container_name: taskforge-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./monitoring/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./monitoring/grafana/dashboards/dashboard.yml:/etc/grafana/provisioning/dashboards/dashboard.yml:ro
+      - ./monitoring/grafana/dashboards/taskforge.json:/var/lib/grafana/dashboards/taskforge.json:ro
+      - taskforge-grafanadata:/var/lib/grafana
+    depends_on:
+      - taskforge-prometheus
+    networks:
+      - taskforge-net
+
+# ── Volumes ─────────────────────────────────────────────────────────────────
+volumes:
+  taskforge-pgdata:
+    driver: local
+  taskforge-promdata:
+    driver: local
+  taskforge-grafanadata:
+    driver: local
+  taskforge-multiproc:
+    driver: local
+
+# ── Networks ────────────────────────────────────────────────────────────────
+networks:
+  taskforge-net:
+    driver: bridge
