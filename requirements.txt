@@ -1,0 +1,37 @@
+# FastAPI & ASGI
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+# Database - API (async)
+sqlalchemy==2.0.36
+asyncpg==0.30.0
+alembic==1.14.1
+
+# Database - Workers (sync) — do NOT use asyncpg in worker context
+psycopg2-binary==2.9.10
+
+# Celery & Redis
+celery==5.4.0
+redis==5.2.1
+
+# Prometheus metrics
+prometheus-client==0.21.1
+prometheus-fastapi-instrumentator==7.0.2
+
+# HTTP client (for load test / seed script)
+httpx==0.28.1
+
+# Testing
+pytest==8.3.4
+pytest-asyncio==0.25.0
+pytest-cov==6.0.0
+httpx==0.28.1
+
+# Linting & type checking
+ruff==0.8.6
+mypy==1.14.1
+
+# Utilities
+python-dotenv==1.0.1
