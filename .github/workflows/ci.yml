@@ -1,0 +1,116 @@
+name: TaskForge CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.10"
+
+jobs:
+  # ── Lint ────────────────────────────────────────────────────────────────────
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Run ruff check
+        run: ruff check app/ worker/ tests/ scripts/
+
+      - name: Run ruff format check
+        run: ruff format --check app/ worker/ tests/ scripts/
+
+  # ── Type Check ──────────────────────────────────────────────────────────────
+  type-check:
+    name: Type Check (mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install mypy types-redis
+
+      - name: Run mypy
+        run: mypy app/ worker/ --ignore-missing-imports
+
+  # ── Unit Tests ──────────────────────────────────────────────────────────────
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: taskforge
+          POSTGRES_PASSWORD: taskforge_secret
+          POSTGRES_DB: taskforge_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U taskforge"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: "sqlite+aiosqlite:///./test.db"
+      DATABASE_URL_SYNC: "sqlite:///./test.db"
+      CELERY_BROKER_URL: "memory://"
+      CELERY_RESULT_BACKEND: "cache+memory://"
+      REDIS_HOST: "localhost"
+      REDIS_PORT: "6379"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install aiosqlite pytest-cov
+
+      - name: Run tests
+        run: pytest tests/ -v --tb=short --cov=app --cov=worker --cov-report=term-missing
+
+  # ── Docker Build ────────────────────────────────────────────────────────────
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t taskforge:ci .
+
+      - name: Verify image
+        run: docker image inspect taskforge:ci --format '{{.Size}}'
