@@ -110,6 +110,14 @@ services:
         condition: service_healthy
       taskforge-redis:
         condition: service_healthy
+    healthcheck:
+      # Worker has no HTTP port; check liveness by pinging it over the broker.
+      # No -d target so it matches regardless of the worker's node name.
+      test: ["CMD-SHELL", "celery -A worker.celery_app:celery_app inspect ping -t 10 >/dev/null 2>&1 || exit 1"]
+      interval: 20s
+      timeout: 15s
+      retries: 5
+      start_period: 40s
     networks:
       - taskforge-net
 
