@@ -1,5 +1,6 @@
 import json
 import uuid
+from typing import cast
 
 import redis
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -27,7 +28,9 @@ def _remove_from_redis_dlq(job_id: uuid.UUID) -> None:
     """Remove a job entry from the Redis DLQ list if it exists."""
     try:
         job_id_str = str(job_id)
-        elements = redis_client.lrange(settings.dlq_queue_name, 0, -1)
+        # decode_responses=True guarantees list[str]; cast past redis-py's
+        # sync/async union return type so mypy sees an iterable.
+        elements = cast("list[str]", redis_client.lrange(settings.dlq_queue_name, 0, -1))
         for element in elements:
             data = json.loads(element)
             if data.get("job_id") == job_id_str:
