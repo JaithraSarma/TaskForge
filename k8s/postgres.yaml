@@ -1,0 +1,102 @@
+# =============================================================================
+# TaskForge — PostgreSQL 16
+# Single-replica StatefulSet with a PVC for data durability, plus the
+# ClusterIP Service ("taskforge-db") that DATABASE_URL/DATABASE_URL_SYNC
+# resolve against.
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: taskforge-db
+  namespace: taskforge
+  labels:
+    app.kubernetes.io/name: taskforge
+    app.kubernetes.io/component: db
+spec:
+  # Headless service: StatefulSet pods get stable DNS (taskforge-db-0.taskforge-db)
+  # and DATABASE_URL's "taskforge-db" host also resolves to the single pod IP.
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: taskforge
+    app.kubernetes.io/component: db
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: taskforge-db
+  namespace: taskforge
+  labels:
+    app.kubernetes.io/name: taskforge
+    app.kubernetes.io/component: db
+spec:
+  serviceName: taskforge-db
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: taskforge
+      app.kubernetes.io/component: db
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: taskforge
+        app.kubernetes.io/component: db
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: "taskforge"
+            - name: POSTGRES_DB
+              value: "taskforge"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: taskforge-db-secret
+                  key: POSTGRES_PASSWORD
+            # Keeps datadir writable across the standard postgres:alpine image
+            # while still writing to the mounted PVC subpath.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "taskforge", "-d", "taskforge"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 10
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "taskforge", "-d", "taskforge"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: taskforge
+          app.kubernetes.io/component: db
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi

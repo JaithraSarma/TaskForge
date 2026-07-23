@@ -1,0 +1,31 @@
+# =============================================================================
+# TaskForge — Non-secret configuration shared by the API and worker Deployments.
+# The DB password is deliberately excluded — see secret.yaml.
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: taskforge-config
+  namespace: taskforge
+  labels:
+    app.kubernetes.io/name: taskforge
+data:
+  # Async driver used by the FastAPI app (asyncpg) and sync driver used by
+  # Alembic/Celery (psycopg2). Host/port resolve via the in-cluster Services
+  # defined in postgres.yaml and redis.yaml.
+  DATABASE_URL: "postgresql+asyncpg://taskforge:taskforge_secret@taskforge-db:5432/taskforge"
+  DATABASE_URL_SYNC: "postgresql+psycopg2://taskforge:taskforge_secret@taskforge-db:5432/taskforge"
+
+  CELERY_BROKER_URL: "redis://taskforge-redis:6379/0"
+  CELERY_RESULT_BACKEND: "redis://taskforge-redis:6379/1"
+
+  REDIS_HOST: "taskforge-redis"
+  REDIS_PORT: "6379"
+
+  MAX_RETRIES: "5"
+  RETRY_BASE_DELAY: "2"
+  DLQ_QUEUE_NAME: "taskforge-dlq"
+
+  # Directory for multi-process Prometheus metrics collection (API only).
+  # Backed by an emptyDir volume mounted in api-deployment.yaml.
+  PROMETHEUS_MULTIPROC_DIR: "/prometheus_multiproc"

@@ -1,0 +1,27 @@
+# =============================================================================
+# TaskForge — HorizontalPodAutoscaler for the API Deployment.
+# Scales taskforge-api between 2 and 6 replicas targeting ~70% CPU
+# utilization. Requires the metrics-server addon in the cluster.
+# =============================================================================
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: taskforge-api
+  namespace: taskforge
+  labels:
+    app.kubernetes.io/name: taskforge
+    app.kubernetes.io/component: api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: taskforge-api
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

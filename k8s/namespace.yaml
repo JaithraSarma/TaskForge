@@ -1,0 +1,10 @@
+# =============================================================================
+# TaskForge — Namespace
+# All other manifests in this directory target this namespace.
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: taskforge
+  labels:
+    app.kubernetes.io/name: taskforge
