@@ -1,6 +1,6 @@
 # TaskForge
 
-> Production-grade async background job processing system built with FastAPI, Celery, Redis, PostgreSQL, and full observability via Prometheus + Grafana.
+Async background job processing system: FastAPI submits jobs, Celery workers execute them, PostgreSQL tracks state, Redis brokers the queue, and Prometheus/Grafana expose what's happening.
 
 [![CI](https://github.com/JaithraSarma/TaskForge/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/JaithraSarma/TaskForge/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -25,97 +25,116 @@
                     └──────────────┘     └──────────────┘
 ```
 
-### Request Flow
+Request flow:
 
-1. Client submits job via `POST /api/v1/jobs` with type, payload, priority
-2. FastAPI validates, creates a `Job` record in PostgreSQL (`status=pending`)
-3. Task is published to Redis via Celery with priority-based queue routing
-4. Celery worker dequeues, sets `status=running`, dispatches to handler
-5. **Success** → `status=succeeded`, result stored in PostgreSQL
-6. **Failure** → exponential backoff retry (2^attempt × base_delay + jitter)
-7. **Permanent failure** → `status=dead`, pushed to Dead-Letter Queue (DLQ)
-8. Prometheus scrapes `/metrics` from the API; Grafana renders live dashboard
+1. Client submits a job via `POST /api/v1/jobs` (type, payload, priority, max_retries).
+2. FastAPI validates the payload, writes a `Job` row to PostgreSQL (`status=pending`), and returns `202 Accepted` immediately — the client never waits on the actual work.
+3. The task is published to Redis. Priority (1-10) maps to one of three Celery queues: `high` (1-3), `default` (4-7), `low` (8-10).
+4. A Celery worker dequeues the task, flips the row to `running`, and dispatches to the handler for that `job_type`.
+5. On success: `status=succeeded`, result written back to the row.
+6. On failure: retried with exponential backoff + jitter until `max_retries` is exhausted, then `status=dead` and the job is pushed onto the Redis dead-letter queue.
+7. Prometheus scrapes `/metrics` on the API; the API also aggregates metrics written by the worker processes via a shared multiprocess directory. Grafana renders it all.
 
----
-
-## Features
-
-- **Job Submission API** — RESTful endpoints for submit, list, get, cancel
-- **Priority Queues** — 3-tier routing (high / default / low) to avoid starvation
-- **Retry with Exponential Backoff** — configurable max retries, jitter for thundering herd protection
-- **Dead-Letter Queue (DLQ)** — inspect, retry, and purge permanently failed jobs
-- **PostgreSQL Job Tracking** — full lifecycle persistence (pending → running → succeeded/failed/dead)
-- **Prometheus Metrics** — job throughput, failure rate, queue depth, retry count, latency percentiles
-- **Grafana Dashboard** — 4-row live dashboard auto-provisioned on boot
-- **Flower** — real-time Celery worker monitoring UI
-- **Docker Compose** — full 7-service local stack with health checks
-- **GitHub Actions CI** — lint, type check, test, Docker build
-- **Load Test** — 5,000 concurrent jobs via asyncio + httpx
+PostgreSQL is the source of truth for job state; Redis only holds in-flight queue messages and the DLQ list.
 
 ---
 
-## Quick Start
+## Why it's built this way
+
+- **`task_acks_late=True` + `task_reject_on_worker_lost=True`** (`worker/celery_app.py`) — Celery's default is to ack (delete) a message before running it, so a worker that gets OOM-killed mid-task loses the job silently. Acking late means the message stays on the broker until the task actually finishes; if the worker dies, Redis redelivers it to another worker instead of dropping it.
+- **asyncpg for the API, psycopg2 for the workers** — the API is an async FastAPI app (`app/database.py` uses `create_async_engine` + asyncpg) so a slow query doesn't block the event loop. Celery's prefork worker pool is synchronous, so `worker/tasks.py` uses a plain psycopg2 engine instead — mixing an async driver into a sync worker process doesn't work. Two separate `DATABASE_URL` / `DATABASE_URL_SYNC` settings keep this explicit rather than papered over.
+- **Priority routing over a single queue** (`app/api/router.py::_priority_to_queue`) — numeric priority 1-10 is mapped to `high`/`default`/`low` Celery queues at submit time, so a burst of low-priority `data_export` jobs can't starve time-sensitive `email_notification` jobs.
+- **Exponential backoff with jitter** (`worker/tasks.py::process_job`) — retry delay is `2^retry_count * retry_base_delay + random(0, 1)`. Plain exponential backoff still causes every failed job to retry in lockstep; the jitter term spreads retries out so a downstream outage doesn't get hit by a synchronized thundering herd when it comes back.
+- **Dead-letter queue** — once `retry_count > max_retries`, the job is marked `dead` in PostgreSQL and pushed as JSON onto a Redis list (`taskforge-dlq`, db 2). The DLQ API (`/api/v1/dlq`) lets you inspect the payload and traceback, retry the job (resets state and re-enqueues), or purge it — without digging through worker logs.
+- **Liveness vs. readiness** — `GET /health` always returns 200 if the process is up; it says nothing about dependencies. `GET /health/ready` actually pings PostgreSQL (`SELECT 1`) and Redis (`PING`) and returns 503 if either is unreachable. Kubernetes uses `/health` to decide whether to restart the container and `/health/ready` to decide whether to send it traffic — conflating the two means a pod with a dead DB connection still gets requests routed to it.
+- **Multiprocess Prometheus registry** — the API runs with `--workers 2` and the worker runs with `--concurrency 4`; `prometheus_client`'s default registry is per-process and doesn't aggregate across any of that. `PROMETHEUS_MULTIPROC_DIR` makes every process write to a shared directory (a Docker volume in compose, an `emptyDir` in k8s), and the API's `/metrics` endpoint uses `MultiProcessCollector` to merge them into one scrape — this is also how worker-side counters (job duration, retries, DLQ size) reach Prometheus at all, since the worker has no HTTP surface of its own. Stale `.db` files from a previous run are cleaned up on API startup.
+
+---
+
+## Tech stack
+
+| Layer | Technology |
+|---|---|
+| API framework | FastAPI 0.115, Uvicorn, Pydantic v2 |
+| Task queue | Celery 5.4, Redis 7 (broker + result backend + DLQ) |
+| Database | PostgreSQL 16, SQLAlchemy 2.0 (asyncpg for the API, psycopg2 for workers), Alembic |
+| Metrics | prometheus-client, prometheus-fastapi-instrumentator, Prometheus, Grafana |
+| Monitoring UI | Flower (Celery task/worker inspector) |
+| Containers | Docker, Docker Compose, Kubernetes manifests |
+| CI/CD | GitHub Actions (lint, type check, test, build), GHCR, Trivy |
+| Quality tooling | ruff, mypy, pytest + pytest-asyncio + pytest-cov |
+| Language | Python 3.10 |
+
+---
+
+## Quick start (Docker Compose)
 
 ```bash
-# Clone
-git clone https://github.com/your-org/taskforge.git
-cd taskforge
+git clone https://github.com/JaithraSarma/TaskForge.git
+cd TaskForge
 
-# Copy environment file
 cp .env.example .env
-
-# Start the full stack
 docker compose up -d --build
+docker compose ps          # everything should show "healthy"
 
-# Verify services
-docker compose ps
-
-# Seed initial data for Grafana
 pip install httpx
 python scripts/seed_jobs.py
 ```
 
-### Access Points
+| Service | URL | Notes |
+|---|---|---|
+| API docs (Swagger) | http://localhost:8000/docs | interactive |
+| API docs (ReDoc) | http://localhost:8000/redoc | |
+| Grafana | http://localhost:3000 | login `admin` / `admin` |
+| Prometheus | http://localhost:9090 | |
+| Flower | http://localhost:5555 | Celery task/worker inspector |
 
-| Service     | URL                          |
-|-------------|------------------------------|
-| API Docs    | http://localhost:8000/docs    |
-| Grafana     | http://localhost:3000         |
-| Prometheus  | http://localhost:9090         |
-| Flower      | http://localhost:5555         |
-
-**Grafana Login:** admin / admin
+See [SETUP.md](SETUP.md) for a step-by-step runbook with expected output at each stage, local (non-Docker) development, running tests, and troubleshooting.
 
 ---
 
-## API Reference
+## Kubernetes
 
-### Jobs
+`k8s/` has plain manifests mirroring the compose topology: a `taskforge-api` Deployment (2 replicas, HPA-scaled on CPU), a `taskforge-worker` Deployment, a Postgres `StatefulSet` with a PVC, a Redis `Deployment`, a `ConfigMap`/`Secret` pair, and probes wired to `/health` and `/health/ready`. See [k8s/README.md](k8s/README.md) for prerequisites, how to load the image into a local cluster (kind/minikube), and apply order.
 
-| Method   | Endpoint                | Description                    |
-|----------|------------------------|--------------------------------|
-| `POST`   | `/api/v1/jobs`         | Submit a new job               |
-| `GET`    | `/api/v1/jobs`         | List jobs (paginated, filtered)|
-| `GET`    | `/api/v1/jobs/{id}`    | Get job details                |
-| `DELETE` | `/api/v1/jobs/{id}`    | Cancel a pending job           |
+```bash
+docker build -t taskforge:latest .
+kind load docker-image taskforge:latest
+kubectl apply -f k8s/
+kubectl -n taskforge port-forward svc/taskforge-api 8000:8000
+```
 
-### Dead-Letter Queue
+---
 
-| Method   | Endpoint                     | Description                 |
-|----------|-----------------------------|-----------------------------|
-| `GET`    | `/api/v1/dlq`              | List DLQ entries            |
-| `GET`    | `/api/v1/dlq/{id}`         | Inspect DLQ entry           |
-| `POST`   | `/api/v1/dlq/{id}/retry`   | Re-enqueue a dead job       |
-| `DELETE` | `/api/v1/dlq/{id}`         | Purge a DLQ entry           |
+## API reference
+
+### Jobs — `/api/v1/jobs`
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/v1/jobs` | Submit a new job — returns `202` |
+| `GET` | `/api/v1/jobs` | List jobs (paginated, filterable by `status` / `job_type`) |
+| `GET` | `/api/v1/jobs/{id}` | Get full job detail |
+| `DELETE` | `/api/v1/jobs/{id}` | Cancel a job — only while it's still `pending` (`409` otherwise) |
+
+### Dead-letter queue — `/api/v1/dlq`
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/v1/dlq` | List DLQ entries (paginated) |
+| `GET` | `/api/v1/dlq/{id}` | Inspect a DLQ entry (payload, error, retry count) |
+| `POST` | `/api/v1/dlq/{id}/retry` | Reset the job to `pending` and re-enqueue it |
+| `DELETE` | `/api/v1/dlq/{id}` | Permanently delete a DLQ entry |
 
 ### System
 
-| Method | Endpoint    | Description      |
-|--------|------------|------------------|
-| `GET`  | `/health`  | Liveness probe   |
-| `GET`  | `/metrics` | Prometheus metrics|
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/health` | Liveness — process is up, no dependency checks |
+| `GET` | `/health/ready` | Readiness — checks PostgreSQL + Redis, `503` if either is down |
+| `GET` | `/metrics` | Prometheus exposition format |
 
-### Example: Submit a Job
+### Example: submit a job
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/jobs \
@@ -128,7 +147,6 @@ curl -X POST http://localhost:8000/api/v1/jobs \
   }'
 ```
 
-Response:
 ```json
 {
   "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
@@ -137,122 +155,96 @@ Response:
 }
 ```
 
----
+### Job types
 
-## Job Types
+Handlers in `worker/handlers.py` simulate real work with a randomized failure rate, so retries and the DLQ actually get exercised without external dependencies:
 
-| Type                 | Description                | Simulated Failure Rate |
-|---------------------|----------------------------|----------------------|
-| `email_notification`| Send email via SMTP         | ~10%                 |
-| `data_export`       | Export data to CSV/JSON     | ~5%                  |
-| `image_resize`      | Resize/compress images      | ~8%                  |
-| `webhook_delivery`  | Deliver HTTP callbacks      | ~12%                 |
-
----
-
-## Failure Scenario Walkthrough
-
-### Scenario 1: Transient Failure → Retry → Success
-
-```
-Job submitted → Worker picks up → Handler throws ConnectionError
-  → Celery retries in 4s (2^1 × 2 + jitter)
-  → Second attempt: another failure
-  → Celery retries in 8s (2^2 × 2 + jitter)
-  → Third attempt: SUCCESS ✅
-  → Status: succeeded, result stored
-```
-
-### Scenario 2: Permanent Failure → DLQ
-
-```
-Job submitted → 5 consecutive failures
-  → Retry 1: 4s delay
-  → Retry 2: 8s delay
-  → Retry 3: 16s delay
-  → Retry 4: 32s delay
-  → Retry 5: 64s delay → STILL FAILS
-  → Status: dead 💀
-  → Pushed to Redis DLQ
-  → Visible at GET /api/v1/dlq
-  → Can be retried via POST /api/v1/dlq/{id}/retry
-```
-
-### Scenario 3: Worker Crash Mid-Execution
-
-```
-Worker dequeues task → starts processing → OOM kill / SIGKILL
-  → Because acks_late=True, the message is NOT acknowledged
-  → Redis visibility timeout expires (default 1hr)
-  → Message re-delivered to another worker
-  → task_reject_on_worker_lost=True ensures proper rejection
-  → Job resumes processing ✅
-```
-
-### Scenario 4: Redis Broker Unavailable
-
-```
-Redis goes down → API cannot enqueue tasks
-  → API returns HTTP 500 (Celery send_task fails)
-  → Jobs remain in PostgreSQL with status=pending
-  → When Redis recovers, pending jobs can be re-submitted
-  → No data loss — PostgreSQL is the source of truth
-```
-
-### Scenario 5: PostgreSQL Unavailable
-
-```
-PostgreSQL goes down → Workers cannot update status
-  → Worker catches DB exception, task is retried
-  → acks_late=True means unacknowledged tasks stay in Redis
-  → When PostgreSQL recovers, status updates resume
-  → No duplicate processing — job ID is idempotent key
-```
+| `job_type` | Simulated failure rate |
+|---|---|
+| `email_notification` | ~10% |
+| `data_export` | ~5% |
+| `image_resize` | ~8% |
+| `webhook_delivery` | ~12% |
 
 ---
 
-## Load Testing
+## Observability
+
+Metrics defined in `app/metrics.py`, exported at `/metrics`:
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `taskforge_jobs_submitted_total` | Counter | `job_type`, `priority` | Jobs accepted via the API |
+| `taskforge_jobs_completed_total` | Counter | `job_type`, `status` | Jobs reaching a terminal state (`succeeded`/`dead`) |
+| `taskforge_jobs_retry_total` | Counter | `job_type` | Retry attempts |
+| `taskforge_job_duration_seconds` | Histogram | `job_type` | Time from `running` to terminal state |
+| `taskforge_queue_depth` | Gauge | `queue_name` | Jobs waiting per priority queue |
+| `taskforge_dlq_size` | Gauge | — | Current DLQ entry count |
+| `taskforge_active_workers` | Gauge | — | Live Celery worker processes |
+
+Standard HTTP request metrics (rate, latency, status codes) are added automatically by `prometheus-fastapi-instrumentator`.
+
+The Grafana dashboard (auto-provisioned from `monitoring/grafana/dashboards/taskforge.json`) is grouped into five rows: **Throughput** (submitted/sec, completed/sec, success rate), **Queue Health** (queue depth, DLQ size, active workers), **Latency** (duration percentiles, p95 by job type), **Failures & Retries** (failure rate, retry rate, totals by status), and **HTTP Endpoint Metrics** (API request rate and latency).
+
+---
+
+## Development
 
 ```bash
-# Full 5k load test
-python scripts/load_test.py --jobs 5000 --concurrency 100
-
-# Quick smoke test
-python scripts/load_test.py --jobs 50 --concurrency 10
-
-# First-boot seed (one of each type)
-python scripts/seed_jobs.py
+make install     # pip install -r requirements.txt
+make up           # docker compose up -d --build
+make test         # pytest tests/ -q
+make lint         # ruff check
+make format       # ruff format
+make typecheck    # mypy app/ worker/
+make seed         # scripts/seed_jobs.py — one job of each type
+make load-test    # scripts/load_test.py --jobs 500 --concurrency 50
+make k8s-validate # kubectl apply -f k8s/ --dry-run=client
+make down         # docker compose down
 ```
+
+Run `make help` for the full list. Load testing and the full command sequence with expected output are covered in [SETUP.md](SETUP.md).
 
 ---
 
-## Project Structure
+## CI/CD
+
+`.github/workflows/ci.yml` runs on every push/PR to `main`: ruff lint + format check, mypy, the pytest suite (against SQLite/in-memory Celery, with Postgres and Redis service containers available for tests that want them), and a Docker build. `.github/workflows/cd.yml` builds the image on pushes to `main` and version tags, pushes it to `ghcr.io/<repo>` with semver/`latest`/sha tags, and scans it with Trivy (currently report-only — findings don't fail the build).
+
+---
+
+## Project layout
 
 ```
 taskforge/
-├── .github/workflows/ci.yml    # GitHub Actions CI
-├── app/                         # FastAPI service
-│   ├── api/                     # REST endpoints
-│   │   ├── router.py            # Job CRUD
-│   │   └── dlq.py               # DLQ management
-│   ├── config.py                # Environment config
-│   ├── database.py              # Async SQLAlchemy
-│   ├── main.py                  # App factory
-│   ├── metrics.py               # Prometheus metrics
-│   ├── models.py                # ORM models
-│   └── schemas.py               # Pydantic schemas
-├── worker/                      # Celery workers
-│   ├── celery_app.py            # App config (acks_late!)
-│   ├── handlers.py              # Job type handlers
-│   ├── signals.py               # Lifecycle signals
-│   └── tasks.py                 # Task definitions
-├── migrations/                  # Alembic migrations
-├── monitoring/                  # Prometheus + Grafana
-├── scripts/                     # Load test + seed
-├── tests/                       # pytest suite
-├── docker-compose.yml           # 7-service stack
-├── Dockerfile                   # Multi-stage build
-└── README.md                    # You are here
+├── .github/workflows/  # ci.yml, cd.yml
+├── app/                # FastAPI service
+│   ├── api/
+│   │   ├── router.py   # job submit/list/get/cancel
+│   │   └── dlq.py      # DLQ list/inspect/retry/purge
+│   ├── config.py       # env-based settings
+│   ├── database.py     # async SQLAlchemy engine/session
+│   ├── main.py         # app factory, lifespan, health endpoints
+│   ├── metrics.py      # Prometheus metric definitions
+│   ├── models.py       # ORM models
+│   └── schemas.py      # Pydantic request/response models
+├── worker/             # Celery workers
+│   ├── celery_app.py   # broker/queue/reliability config
+│   ├── handlers.py     # per-job-type handler registry
+│   ├── signals.py      # worker lifecycle -> Prometheus gauges
+│   └── tasks.py        # process_job: retry + DLQ logic
+├── migrations/         # Alembic
+├── monitoring/         # Prometheus config, Grafana dashboard
+├── k8s/                # Deployments, StatefulSet, HPA, ConfigMap/Secret
+├── scripts/
+│   ├── seed_jobs.py    # one job of each type
+│   └── load_test.py    # concurrent load simulation
+├── tests/              # pytest suite
+├── docker-compose.yml
+├── Dockerfile          # multi-stage; same image for api and worker
+├── Makefile
+├── THEORY.md           # design/reliability theory reference
+└── SETUP.md            # step-by-step runbook
 ```
 
 ---
@@ -260,12 +252,3 @@ taskforge/
 ## License
 
 MIT — see [LICENSE](LICENSE).
-
-
-<!-- Verified Python 3.10+ PEP 585/604 compliance -->
-
-
-<!-- Verified Python 3.10+ PEP 585/604 compliance -->
-
-
-<!-- Verified Python 3.10+ PEP 585/604 compliance -->

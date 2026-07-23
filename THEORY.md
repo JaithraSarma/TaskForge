@@ -1,6 +1,6 @@
 # TaskForge — Theoretical Guide to Asynchronous Job Processing
 
-This document outlines the architectural patterns, design decisions, and system engineering principles behind **TaskForge**. It serves as a comprehensive theoretical reference for background processing, reliability engineering, and system observability.
+This document is the theoretical background behind TaskForge's design: the reasoning for the patterns you'll find in `app/` and `worker/`, not a restatement of them. For what's actually implemented, see [README.md](README.md) (architecture + design decisions) and [SETUP.md](SETUP.md) (how to run it).
 
 ---
 
@@ -148,7 +148,9 @@ TaskForge splits jobs into three queues: `high`, `default`, and `low`.
 - **Starvation Avoidance**: Workers subscribing to multiple queues prioritize high-priority tasks using Celery routing configurations.
 
 ### 8.2. Horizontal Autoscaling (HPA)
-In Kubernetes, workers are autoscaled horizontally using **KEDA (Kubernetes Event-driven Autoscaling)** based on the queue depth in Redis:
+`k8s/hpa.yaml` scales the **API** Deployment between 2 and 6 replicas on CPU utilization (target 70%), using the standard `autoscaling/v2` HorizontalPodAutoscaler and the cluster's `metrics-server`. The Celery worker Deployment is not autoscaled in this version — it runs a fixed 2 replicas.
+
+CPU is a reasonable proxy for the API tier, but not for the worker: a worker can be CPU-idle while still falling behind because the queue is deep (e.g. it's waiting on slow I/O in a handler). The natural next step for worker autoscaling is a queue-depth-driven scaler — **KEDA**'s Redis scaler, for example, can watch list length per queue and scale worker replicas directly off backlog rather than CPU:
 
 ```yaml
 apiVersion: keda.sh/v1alpha1
@@ -167,6 +169,8 @@ spec:
       listName: default
       listLength: "50" # scale up when list length exceeds 50
 ```
+
+This is not deployed anywhere in this repo — it's included here as the direction scaling would go, not a description of current behavior.
 
 ---
 
