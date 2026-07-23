@@ -1,6 +1,7 @@
 """Tests for the FastAPI job submission and management endpoints."""
 
 import uuid
+from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -164,3 +165,34 @@ class TestHealthCheck:
         data = response.json()
         assert data["status"] == "healthy"
         assert data["service"] == "TaskForge"
+
+
+class TestReadiness:
+    """Tests for GET /health/ready."""
+
+    def test_ready_when_deps_ok(self, client: TestClient) -> None:
+        """Readiness returns 200 when both database and redis are reachable."""
+        with (
+            patch("redis.asyncio.Redis.ping", new_callable=AsyncMock, return_value=True),
+            patch("redis.asyncio.Redis.aclose", new_callable=AsyncMock, return_value=None),
+        ):
+            response = client.get("/health/ready")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "ready"
+        assert data["checks"] == {"database": "ok", "redis": "ok"}
+
+    def test_not_ready_when_redis_down(self, client: TestClient) -> None:
+        """Readiness returns 503 when redis is unreachable."""
+        with (
+            patch("redis.asyncio.Redis.ping", new_callable=AsyncMock, side_effect=ConnectionError),
+            patch("redis.asyncio.Redis.aclose", new_callable=AsyncMock, return_value=None),
+        ):
+            response = client.get("/health/ready")
+
+        assert response.status_code == 503
+        data = response.json()
+        assert data["status"] == "not_ready"
+        assert data["checks"]["redis"] == "unavailable"
+        assert data["checks"]["database"] == "ok"
