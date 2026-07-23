@@ -18,7 +18,8 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         libpq-dev \
         gcc \
-        curl && \
+        curl \
+        gosu && \
     rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -43,7 +44,8 @@ COPY pyproject.toml .
 # Change ownership
 RUN chown -R taskforge:taskforge /app
 
-USER taskforge
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 # Health check for the API service
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
@@ -51,5 +53,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
 
 EXPOSE 8000
 
+ENTRYPOINT ["/app/entrypoint.sh"]
 # Default CMD runs the API — override for workers
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
