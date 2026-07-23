@@ -124,9 +124,10 @@ async def retry_dlq_entry(
     await db.flush()
 
     # Re-enqueue in Celery
+    from app.api.router import _priority_to_queue
     from worker.celery_app import celery_app
 
-    priority_queue = "high" if job.priority <= 3 else ("low" if job.priority > 7 else "default")
+    priority_queue = _priority_to_queue(job.priority)
     task = celery_app.send_task(
         "worker.tasks.process_job",
         args=[str(job.id)],

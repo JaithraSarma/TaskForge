@@ -141,7 +141,7 @@ def process_job(self: Task, job_id: str) -> dict:
         logger.info("Job %s completed successfully in %.2fs", job_id, duration)
         return {"status": "succeeded", "result": result}
 
-    except (KeyError, Exception) as exc:
+    except Exception as exc:
         # Determine if we should retry or send to DLQ
         job = session.query(Job).filter(Job.id == job_uuid).first()
         if not job:
