@@ -1,16 +1,20 @@
 """FastAPI application factory and entrypoint."""
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 
+import redis.asyncio as aioredis
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
+from sqlalchemy import text
 
 from app.api import dlq, router
 from app.config import get_settings
-from app.database import init_db
-from app.schemas import HealthResponse
+from app.database import async_session_factory, init_db
+from app.schemas import HealthResponse, ReadinessResponse
 
 settings = get_settings()
 
@@ -80,10 +84,12 @@ app = FastAPI(
 )
 
 # -- Middleware --
+# Wildcard origins cannot be combined with allow_credentials=True per the CORS spec
+# (browsers reject it) — allow_credentials must be False when allow_origins is "*".
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=settings.cors_origins,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -104,7 +110,7 @@ if os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
     Instrumentator(
         should_group_status_codes=True,
         should_ignore_untemplated=True,
-        excluded_handlers=["/health", "/metrics"],
+        excluded_handlers=["/health", "/health/ready", "/metrics"],
     ).instrument(app)
 
     @app.get("/metrics", include_in_schema=False)
@@ -119,7 +125,7 @@ else:
     Instrumentator(
         should_group_status_codes=True,
         should_ignore_untemplated=True,
-        excluded_handlers=["/health", "/metrics"],
+        excluded_handlers=["/health", "/health/ready", "/metrics"],
     ).instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
 
 # -- Routers --
@@ -136,3 +142,43 @@ async def health_check() -> HealthResponse:
         version=settings.app_version,
         service=settings.app_name,
     )
+
+
+@app.get("/health/ready", response_model=ReadinessResponse, tags=["system"])
+async def readiness_check() -> ReadinessResponse | JSONResponse:
+    """Readiness probe — verifies PostgreSQL and Redis are actually reachable."""
+    checks: dict[str, str] = {}
+
+    try:
+        async with async_session_factory() as session:
+            await session.execute(text("SELECT 1"))
+        checks["database"] = "ok"
+    except Exception as e:
+        logging.getLogger("app.main").error("Readiness check: database unavailable: %s", e)
+        checks["database"] = "unavailable"
+
+    try:
+        client = aioredis.Redis(
+            host=settings.redis_host,
+            port=settings.redis_port,
+            socket_connect_timeout=2,
+        )
+        try:
+            await client.ping()
+            checks["redis"] = "ok"
+        finally:
+            await client.aclose()
+    except Exception as e:
+        logging.getLogger("app.main").error("Readiness check: redis unavailable: %s", e)
+        checks["redis"] = "unavailable"
+
+    ready = all(v == "ok" for v in checks.values())
+    response = ReadinessResponse(
+        status="ready" if ready else "not_ready",
+        checks=checks,
+        version=settings.app_version,
+        service=settings.app_name,
+    )
+    if ready:
+        return response
+    return JSONResponse(status_code=503, content=response.model_dump())

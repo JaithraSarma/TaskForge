@@ -146,3 +146,12 @@ class HealthResponse(BaseModel):
     status: str = "healthy"
     version: str
     service: str
+
+
+class ReadinessResponse(BaseModel):
+    """Readiness probe response — verifies downstream dependencies."""
+
+    status: str
+    checks: dict[str, str]
+    version: str
+    service: str
