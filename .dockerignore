@@ -1,0 +1,42 @@
+# =============================================================================
+# TaskForge — .dockerignore
+# Keeps the Docker build context small and reproducible. The Dockerfile only
+# needs app/, worker/, migrations/, alembic.ini, pyproject.toml, and
+# requirements.txt — everything else below is excluded from the build context.
+# =============================================================================
+
+# Version control
+.git
+.github
+
+# Python virtual environments
+.venv
+venv
+
+# Python bytecode / caches
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Not needed at runtime — excluded from the image context
+tests
+scripts
+monitoring
+k8s
+
+# Local databases
+*.db
+*.sqlite3
+
+# Secrets / environment
+.env
+
+# Docs
+*.md
+
+# Compose / Docker meta files (irrelevant inside the build context itself)
+docker-compose*.yml
+.dockerignore
+Dockerfile
