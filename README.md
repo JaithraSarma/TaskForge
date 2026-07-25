@@ -9,20 +9,44 @@ Async background job processing system: FastAPI submits jobs, Celery workers exe
 
 ## Architecture
 
-```
-┌─────────────┐     ┌──────────────┐     ┌──────────────┐
-│  REST Client │────▶│  FastAPI API  │────▶│ Redis Broker │
-└─────────────┘     └──────┬───────┘     └──────┬───────┘
-                           │                     │
-                    ┌──────▼───────┐     ┌──────▼───────┐
-                    │  PostgreSQL   │◀────│ Celery Worker│
-                    │ (Job Tracker) │     │   (1..N)     │
-                    └──────────────┘     └──────┬───────┘
-                                                │
-                    ┌──────────────┐     ┌──────▼───────┐
-                    │   Grafana     │◀────│  Prometheus   │
-                    │ (Dashboard)   │     │  (Metrics)    │
-                    └──────────────┘     └──────────────┘
+```mermaid
+flowchart LR
+    client(["REST Client"]):::ext
+
+    subgraph app["TaskForge services"]
+        direction TB
+        api["FastAPI API :8000<br/>validate · 202 Accepted<br/>/metrics · /health · /health/ready"]:::app
+        worker["Celery workers · 1..N<br/>acks_late · backoff + jitter"]:::app
+    end
+
+    subgraph state["State &amp; broker"]
+        redis[("Redis 7<br/>broker · result backend<br/>queues high/default/low · DLQ")]:::redis
+        pg[("PostgreSQL 16<br/>job state — source of truth")]:::pg
+    end
+
+    subgraph obs["Observability"]
+        prom[("Prometheus<br/>scrape /metrics")]:::prom
+        graf["Grafana<br/>dashboard"]:::graf
+        flower["Flower<br/>Celery inspector"]:::flower
+    end
+
+    client -->|"POST /api/v1/jobs"| api
+    api -->|"write Job · status=pending"| pg
+    api ==>|"enqueue by priority"| redis
+    redis -->|"dequeue task"| worker
+    worker -->|"running → succeeded / dead"| pg
+    worker -.->|"max_retries exhausted → DLQ"| redis
+    prom -->|"scrape (multiproc merge)"| api
+    prom --> graf
+    flower --> redis
+
+    classDef ext fill:#455a64,stroke:#263238,color:#fff;
+    classDef app fill:#009688,stroke:#00564d,color:#fff;
+    classDef redis fill:#d82c20,stroke:#8f1d15,color:#fff;
+    classDef pg fill:#336791,stroke:#1f3f59,color:#fff;
+    classDef prom fill:#e6522c,stroke:#98351c,color:#fff;
+    classDef graf fill:#f46800,stroke:#a34500,color:#fff;
+    classDef flower fill:#5c6bc0,stroke:#333a80,color:#fff;
 ```
 
 Request flow:
