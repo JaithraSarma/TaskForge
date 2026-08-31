@@ -1,22 +1,25 @@
 """FastAPI application factory and entrypoint."""
 
 import logging
-from collections.abc import AsyncIterator
+import uuid
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 
 import redis.asyncio as aioredis
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from prometheus_fastapi_instrumentator import Instrumentator
 from sqlalchemy import text
 
 from app.api import dlq, router
 from app.config import get_settings
 from app.database import async_session_factory, init_db
+from app.logging_config import configure_logging, request_id_var
 from app.schemas import HealthResponse, ReadinessResponse
 
 settings = get_settings()
+configure_logging()
 
 
 @asynccontextmanager
@@ -94,11 +97,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def request_id_middleware(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
+    """Attach a correlation id to every request, propagating it via X-Request-ID."""
+    incoming_id = request.headers.get("X-Request-ID")
+    request_id = incoming_id or uuid.uuid4().hex
+    token = request_id_var.set(request_id)
+    try:
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+    finally:
+        request_id_var.reset(token)
+
+
 # -- Prometheus instrumentation --
 import os
 
 if os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
-    from fastapi import Response
     from prometheus_client import (
         CONTENT_TYPE_LATEST,
         CollectorRegistry,

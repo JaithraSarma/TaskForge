@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
     cors_origins: list[str] = ["*"]
+    log_level: str = "INFO"
+    log_format: str = "json"  # "json" or "console"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

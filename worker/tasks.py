@@ -17,6 +17,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import get_settings
+from app.logging_config import request_id_var
 from app.metrics import (
     DLQ_SIZE,
     JOB_DURATION_SECONDS,
@@ -103,6 +104,9 @@ def process_job(self: Task, job_id: str) -> dict:
     import uuid
 
     from app.models import Job
+
+    # Bind the job id as the correlation id for all logging during this task
+    token = request_id_var.set(str(job_id))
 
     # Ensure job_id is parsed as uuid.UUID for compatibility with SQLite
     job_uuid = uuid.UUID(job_id) if isinstance(job_id, str) else job_id
@@ -196,3 +200,4 @@ def process_job(self: Task, job_id: str) -> dict:
 
     finally:
         session.close()
+        request_id_var.reset(token)

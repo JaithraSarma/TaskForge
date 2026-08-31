@@ -16,6 +16,7 @@ from celery.signals import (
     worker_shutdown,
 )
 
+from app.logging_config import configure_logging
 from app.metrics import ACTIVE_WORKERS, QUEUE_DEPTH
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 @worker_process_init.connect
 def on_worker_init(**kwargs: object) -> None:
     """Increment active worker gauge when a worker process starts."""
+    configure_logging()
     ACTIVE_WORKERS.inc()
     logger.info("Worker process initialized")
 
