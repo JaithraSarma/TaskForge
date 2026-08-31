@@ -30,3 +30,12 @@ asyncio_mode = "auto"
 filterwarnings = [
     "ignore::DeprecationWarning",
 ]
+
+[tool.coverage.run]
+source = ["app", "worker"]
+# The async API runs its DB work through SQLAlchemy's greenlet bridge inside
+# the TestClient's worker thread. Without declaring both, coverage under-counts
+# the endpoint bodies on the settrace-based tracer (Python < 3.12) even though
+# the tests exercise them, which makes the measured percentage swing by Python
+# version. Declaring the concurrency models keeps the number consistent.
+concurrency = ["thread", "greenlet"]
