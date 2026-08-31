@@ -3,7 +3,7 @@
 import logging
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 
 import redis.asyncio as aioredis
 from fastapi import FastAPI, Request
@@ -24,52 +24,25 @@ configure_logging()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Application lifespan — initialize DB on startup and load current metrics."""
-    import glob
+    """Application lifespan: configure logging and initialize the database.
+
+    Logging is (re)configured here as well as at import time so it takes effect
+    after Uvicorn has installed its own logging, letting Uvicorn's records flow
+    through the structured handler.
+    """
     import os
 
-    # Clean up old multiprocess metrics files on startup
+    configure_logging()
+
+    # Ensure the shared multiprocess directory exists. We deliberately do NOT
+    # wipe it here: the API and the workers write to the same volume, so a wipe
+    # on API startup would delete the workers' live metric state. A fresh slate
+    # comes from recreating the volume (docker compose down -v).
     mp_dir = os.environ.get("PROMETHEUS_MULTIPROC_DIR")
     if mp_dir:
         os.makedirs(mp_dir, exist_ok=True)
-        for f in glob.glob(os.path.join(mp_dir, "*.db")):
-            with suppress(OSError):
-                os.remove(f)
 
     await init_db()
-
-    # Initialize Prometheus gauges from database state
-    try:
-        from sqlalchemy import func, select
-
-        from app.api.router import _priority_to_queue
-        from app.database import async_session_factory
-        from app.metrics import DLQ_SIZE, QUEUE_DEPTH
-        from app.models import Job, JobStatus
-
-        async with async_session_factory() as session:
-            # DLQ Size
-            dlq_count = await session.scalar(
-                select(func.count()).select_from(Job).where(Job.status == JobStatus.DEAD)
-            )
-            DLQ_SIZE.set(dlq_count or 0)
-
-            # Queue Depth
-            result = await session.execute(
-                select(Job.priority, func.count())
-                .where(Job.status == JobStatus.PENDING)
-                .group_by(Job.priority)
-            )
-            queue_counts = {"high": 0, "default": 0, "low": 0}
-            for priority, count in result.all():
-                q = _priority_to_queue(priority)
-                queue_counts[q] += count
-            for q, count in queue_counts.items():
-                QUEUE_DEPTH.labels(queue_name=q).set(count)
-    except Exception as e:
-        import logging
-
-        logging.getLogger("app.main").error("Failed to initialize metrics from database: %s", e)
 
     yield
 

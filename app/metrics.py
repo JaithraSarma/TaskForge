@@ -43,18 +43,27 @@ JOB_DURATION_SECONDS = Histogram(
 # Gauges
 # ---------------------------------------------------------------------------
 
+# multiprocess_mode="livesum": the API and the workers run as separate
+# processes writing to a shared multiprocess directory. "livesum" sums each
+# live process's value into one series (and drops processes that have exited),
+# which is the correct aggregation for these event-driven gauges. Without it
+# the default per-process series never combine into a meaningful total.
+
 QUEUE_DEPTH = Gauge(
     "taskforge_queue_depth",
     "Current number of tasks waiting in each queue",
     labelnames=["queue_name"],
+    multiprocess_mode="livesum",
 )
 
 DLQ_SIZE = Gauge(
     "taskforge_dlq_size",
     "Current number of entries in the dead-letter queue",
+    multiprocess_mode="livesum",
 )
 
 ACTIVE_WORKERS = Gauge(
     "taskforge_active_workers",
     "Number of currently active worker processes",
+    multiprocess_mode="livesum",
 )

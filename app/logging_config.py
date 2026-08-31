@@ -89,3 +89,11 @@ def configure_logging(level: str | None = None, fmt: str | None = None) -> None:
 
     root.addHandler(handler)
     root.setLevel(resolved_level)
+
+    # Uvicorn installs its own handlers on these loggers, which would bypass the
+    # structured handler above. Clear them and let the records propagate to the
+    # root logger so API output is JSON-formatted like the rest of the system.
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        third_party = logging.getLogger(name)
+        third_party.handlers = []
+        third_party.propagate = True
