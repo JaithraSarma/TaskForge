@@ -51,12 +51,19 @@ async def submit_job(
         status=JobStatus.PENDING,
     )
     db.add(job)
-    await db.flush()  # get the generated ID before commit
+    await db.flush()  # assign the generated ID
+
+    queue_name = _priority_to_queue(job_in.priority)
+
+    # Commit the job as PENDING before enqueuing. If the task were enqueued
+    # first, a fast worker could dequeue and read the row before this request's
+    # transaction committed, find nothing, and silently drop the job. Persisting
+    # first guarantees the worker can always load it.
+    await db.commit()
 
     # Enqueue in Celery — import here to avoid circular import at module level
     from worker.celery_app import celery_app
 
-    queue_name = _priority_to_queue(job_in.priority)
     task = celery_app.send_task(
         "worker.tasks.process_job",
         args=[str(job.id)],
@@ -65,7 +72,7 @@ async def submit_job(
 
     # Store the Celery task ID for correlation
     job.celery_task_id = task.id
-    await db.flush()
+    await db.commit()
 
     # Increment Prometheus counter
     JOBS_SUBMITTED_TOTAL.labels(
