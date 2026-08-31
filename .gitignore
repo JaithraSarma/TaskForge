@@ -76,3 +76,6 @@ terraform.exe
 .terraform/
 *.tfstate*
 node_modules/
+
+# Personal interview-prep notes (local only)
+context.md
