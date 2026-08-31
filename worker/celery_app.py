@@ -56,3 +56,8 @@ celery_app.conf.update(
 
 # Auto-discover tasks from the worker package
 celery_app.autodiscover_tasks(["worker"])
+
+# Import signal handlers for their side effect of connecting to Celery signals
+# (worker lifecycle metrics, queue-depth gauges, and structured logging setup).
+# Autodiscovery only loads worker.tasks, so this import is what registers them.
+from worker import signals  # noqa: E402, F401

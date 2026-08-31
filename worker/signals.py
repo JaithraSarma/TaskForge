@@ -9,6 +9,7 @@ import logging
 
 from celery import Task
 from celery.signals import (
+    setup_logging,
     task_postrun,
     task_prerun,
     task_retry,
@@ -20,6 +21,16 @@ from app.logging_config import configure_logging
 from app.metrics import ACTIVE_WORKERS, QUEUE_DEPTH
 
 logger = logging.getLogger(__name__)
+
+
+@setup_logging.connect
+def on_setup_logging(**kwargs: object) -> None:
+    """Own logging configuration for the worker.
+
+    Connecting to setup_logging tells Celery not to install its own root
+    logger, so worker output uses the same structured JSON format as the API.
+    """
+    configure_logging()
 
 
 @worker_process_init.connect
