@@ -208,6 +208,10 @@ Metrics defined in `app/metrics.py`, exported at `/metrics`:
 
 Standard HTTP request metrics (rate, latency, status codes) are added automatically by `prometheus-fastapi-instrumentator`.
 
+### Structured logging
+
+Both the API and the workers emit single-line JSON logs (`app/logging_config.py`) so they drop straight into Loki, CloudWatch, or any log pipeline without regex parsing. Every record carries a `request_id`: the API generates one per HTTP request (or honours an inbound `X-Request-ID` header) and echoes it back on the response, and each worker binds the `job_id` it is processing as the request id. That single field lets you follow one job from the API call, through the queue, to the worker that ran it. Set `LOG_FORMAT=console` for human-readable output during local development and `LOG_LEVEL` to tune verbosity.
+
 The Grafana dashboard (auto-provisioned from `monitoring/grafana/dashboards/taskforge.json`) is grouped into five rows: **Throughput** (submitted/sec, completed/sec, success rate), **Queue Health** (queue depth, DLQ size, active workers), **Latency** (duration percentiles, p95 by job type), **Failures & Retries** (failure rate, retry rate, totals by status), and **HTTP Endpoint Metrics** (API request rate and latency).
 
 ---
@@ -233,7 +237,9 @@ Run `make help` for the full list. Load testing and the full command sequence wi
 
 ## CI/CD
 
-`.github/workflows/ci.yml` runs on every push/PR to `main`: ruff lint + format check, mypy, the pytest suite (against SQLite/in-memory Celery, with Postgres and Redis service containers available for tests that want them), and a Docker build. `.github/workflows/cd.yml` builds the image on pushes to `main` and version tags, pushes it to `ghcr.io/<repo>` with semver/`latest`/sha tags, and scans it with Trivy (currently report-only — findings don't fail the build).
+`.github/workflows/ci.yml` runs on every push/PR to `main`: ruff lint + format check, mypy, the pytest suite (against SQLite/in-memory Celery, with Postgres and Redis service containers available for tests that want them) with a coverage floor enforced via `--cov-fail-under`, and a Docker build. `.github/workflows/cd.yml` builds the image on pushes to `main` and version tags, pushes it to `ghcr.io/<repo>` with semver/`latest`/sha tags, and scans it with Trivy (currently report-only — findings don't fail the build).
+
+The same lint and type checks run locally through `.pre-commit-config.yaml`. Run `pre-commit install` once and every commit is checked before it lands.
 
 ---
 
@@ -248,6 +254,7 @@ taskforge/
 │   │   └── dlq.py      # DLQ list/inspect/retry/purge
 │   ├── config.py       # env-based settings
 │   ├── database.py     # async SQLAlchemy engine/session
+│   ├── logging_config.py # JSON logs + request/job correlation IDs
 │   ├── main.py         # app factory, lifespan, health endpoints
 │   ├── metrics.py      # Prometheus metric definitions
 │   ├── models.py       # ORM models

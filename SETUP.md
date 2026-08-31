@@ -205,7 +205,7 @@ The suite runs against SQLite (async via `aiosqlite`, sync via the stdlib driver
 (exact count/timing will drift as tests are added; the important part is `N passed` with no failures)
 
 ```bash
-make lint        # ruff check app/ worker/ tests/ scripts/
+make lint        # ruff check app/ worker/ tests/ scripts/ migrations/
 ```
 ```
 All checks passed!
@@ -215,7 +215,15 @@ All checks passed!
 make typecheck    # mypy app/ worker/ --ignore-missing-imports
 ```
 ```
-Success: no issues found in 15 source files
+Success: no issues found in ... source files
+```
+
+To run the same lint and type checks automatically on every commit, install the git hooks once:
+
+```bash
+pip install pre-commit
+pre-commit install
+make precommit    # optional: run all hooks against the whole tree now
 ```
 
 ---
