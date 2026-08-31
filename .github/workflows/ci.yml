@@ -25,10 +25,10 @@ jobs:
         run: pip install ruff
 
       - name: Run ruff check
-        run: ruff check app/ worker/ tests/ scripts/
+        run: ruff check app/ worker/ tests/ scripts/ migrations/
 
       - name: Run ruff format check
-        run: ruff format --check app/ worker/ tests/ scripts/
+        run: ruff format --check app/ worker/ tests/ scripts/ migrations/
 
   # ── Type Check ──────────────────────────────────────────────────────────────
   type-check:
@@ -102,7 +102,7 @@ jobs:
           pip install aiosqlite pytest-cov
 
       - name: Run tests
-        run: pytest tests/ -v --tb=short --cov=app --cov=worker --cov-report=term-missing
+        run: pytest tests/ -v --tb=short --cov=app --cov=worker --cov-report=term-missing --cov-fail-under=80
 
   # ── Docker Build ────────────────────────────────────────────────────────────
   docker-build:

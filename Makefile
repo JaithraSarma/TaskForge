@@ -6,7 +6,7 @@ PYTHON := .venv/Scripts/python.exe
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install up down logs ps test lint format typecheck seed load-test k8s-validate clean
+.PHONY: help install up down logs ps test lint format typecheck precommit seed load-test k8s-validate clean
 
 help: ## Show this help message
 	@echo "TaskForge — available targets:"
@@ -31,13 +31,16 @@ test: ## Run the test suite
 	$(PYTHON) -m pytest tests/ -q
 
 lint: ## Check code style with ruff
-	ruff check app/ worker/ tests/ scripts/
+	ruff check app/ worker/ tests/ scripts/ migrations/
 
 format: ## Auto-format code with ruff
-	ruff format app/ worker/ tests/ scripts/
+	ruff format app/ worker/ tests/ scripts/ migrations/
 
 typecheck: ## Run static type checks with mypy
 	mypy app/ worker/ --ignore-missing-imports
+
+precommit: ## Run all pre-commit hooks against the whole tree
+	pre-commit run --all-files
 
 seed: ## Seed the database with sample jobs
 	python scripts/seed_jobs.py
