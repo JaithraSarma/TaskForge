@@ -7,6 +7,7 @@ in the FastAPI context. Celery workers use psycopg2 (sync) — see worker/tasks.
 
 from collections.abc import AsyncGenerator
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -58,6 +59,14 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def init_db() -> None:
-    """Create all tables — used for development / first boot."""
+    """Create all tables. Safe to run concurrently from multiple workers.
+
+    A PostgreSQL advisory lock serializes concurrent create_all calls so two
+    Uvicorn workers do not race on creating the job_status enum type. SQLite,
+    used in tests, has no advisory locks and needs no serialization.
+    """
     async with engine.begin() as conn:
+        if conn.dialect.name == "postgresql":
+            # Arbitrary constant lock key shared by all workers.
+            await conn.execute(text("SELECT pg_advisory_xact_lock(9123456789)"))
         await conn.run_sync(Base.metadata.create_all)
