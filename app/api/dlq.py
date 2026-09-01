@@ -124,7 +124,12 @@ async def retry_dlq_entry(
     job.started_at = None
     job.completed_at = None
 
-    await db.flush()
+    # Commit the reset before re-enqueuing, for the same reason as submit_job:
+    # if the task were enqueued while this reset was only flushed, a fast worker
+    # could reprocess the job and write its outcome, then this request's deferred
+    # commit would clobber that outcome back to the reset state (e.g. wiping the
+    # error). Committing first makes the reset durable before the task can run.
+    await db.commit()
 
     # Re-enqueue in Celery
     from app.api.router import _priority_to_queue
@@ -137,7 +142,7 @@ async def retry_dlq_entry(
         queue=priority_queue,
     )
     job.celery_task_id = task.id
-    await db.flush()
+    await db.commit()
 
     # Update metrics
     DLQ_SIZE.dec()
