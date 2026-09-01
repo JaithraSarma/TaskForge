@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.metrics import JOBS_SUBMITTED_TOTAL, QUEUE_DEPTH
+from app.metrics import JOBS_SUBMITTED_TOTAL
 from app.models import Job, JobStatus
 from app.schemas import (
     JobCreate,
@@ -79,9 +79,6 @@ async def submit_job(
         job_type=job_in.job_type,
         priority=queue_name,
     ).inc()
-
-    # Increment queue depth
-    QUEUE_DEPTH.labels(queue_name=queue_name).inc()
 
     return JobSubmittedResponse(id=job.id, status=JobStatusEnum(job.status.value))
 

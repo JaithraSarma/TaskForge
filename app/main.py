@@ -16,6 +16,7 @@ from app.api import dlq, router
 from app.config import get_settings
 from app.database import async_session_factory, init_db
 from app.logging_config import configure_logging, request_id_var
+from app.metrics import QUEUE_DEPTH_COLLECTOR
 from app.schemas import HealthResponse, ReadinessResponse
 
 settings = get_settings()
@@ -110,6 +111,7 @@ if os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
         """Endpoint that collects and exposes multiprocess metrics."""
         registry = CollectorRegistry()
         multiprocess.MultiProcessCollector(registry)
+        registry.register(QUEUE_DEPTH_COLLECTOR)
         data = generate_latest(registry)
         return Response(content=data, media_type=CONTENT_TYPE_LATEST)
 else:
@@ -119,6 +121,10 @@ else:
         should_ignore_untemplated=True,
         excluded_handlers=["/health", "/health/ready", "/metrics"],
     ).instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
+
+    from prometheus_client import REGISTRY
+
+    REGISTRY.register(QUEUE_DEPTH_COLLECTOR)
 
 # -- Routers --
 app.include_router(router.router)

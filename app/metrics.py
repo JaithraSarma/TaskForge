@@ -4,7 +4,14 @@ These metrics are shared between the API layer and the Celery worker layer
 via the prometheus_client registry.
 """
 
+from collections.abc import Iterator
+from typing import cast
+
+import redis
 from prometheus_client import Counter, Gauge, Histogram
+from prometheus_client.core import GaugeMetricFamily
+
+from app.config import get_settings
 
 # ---------------------------------------------------------------------------
 # Counters
@@ -46,15 +53,9 @@ JOB_DURATION_SECONDS = Histogram(
 # multiprocess_mode="livesum": the API and the workers run as separate
 # processes writing to a shared multiprocess directory. "livesum" sums each
 # live process's value into one series (and drops processes that have exited),
-# which is the correct aggregation for these event-driven gauges. Without it
-# the default per-process series never combine into a meaningful total.
-
-QUEUE_DEPTH = Gauge(
-    "taskforge_queue_depth",
-    "Current number of tasks waiting in each queue",
-    labelnames=["queue_name"],
-    multiprocess_mode="livesum",
-)
+# which is the correct aggregation for these event-driven gauges (DLQ_SIZE,
+# ACTIVE_WORKERS). Without it the default per-process series never combine
+# into a meaningful total.
 
 DLQ_SIZE = Gauge(
     "taskforge_dlq_size",
@@ -67,3 +68,38 @@ ACTIVE_WORKERS = Gauge(
     "Number of currently active worker processes",
     multiprocess_mode="livesum",
 )
+
+
+class QueueDepthCollector:
+    """Expose queue depth by reading the broker's Redis list lengths at scrape time.
+
+    This is the broker's own source of truth, so it stays correct across retries
+    and multiple worker processes, unlike an inc/dec counter which can drift.
+    """
+
+    _QUEUES = ("high", "default", "low")
+
+    def collect(self) -> Iterator[GaugeMetricFamily]:
+        """Yield one taskforge_queue_depth gauge with a sample per queue."""
+        family = GaugeMetricFamily(
+            "taskforge_queue_depth",
+            "Tasks currently waiting in each priority queue, read from the broker.",
+            labels=["queue_name"],
+        )
+        try:
+            client = redis.Redis.from_url(get_settings().celery_broker_url)
+            try:
+                for queue_name in self._QUEUES:
+                    # decode_responses is irrelevant to LLEN; cast past redis-py's
+                    # sync/async union return type so mypy sees a plain int.
+                    length = cast("int", client.llen(queue_name))
+                    family.add_metric([queue_name], float(length))
+            finally:
+                client.close()
+        except Exception:
+            # A metrics scrape must never fail because the broker is unreachable.
+            pass
+        yield family
+
+
+QUEUE_DEPTH_COLLECTOR = QueueDepthCollector()

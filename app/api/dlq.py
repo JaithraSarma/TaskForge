@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.database import get_db
-from app.metrics import DLQ_SIZE, QUEUE_DEPTH
+from app.metrics import DLQ_SIZE
 from app.models import Job, JobStatus
 from app.schemas import DLQEntry, DLQListResponse, JobStatusEnum, JobSubmittedResponse
 
@@ -141,7 +141,6 @@ async def retry_dlq_entry(
 
     # Update metrics
     DLQ_SIZE.dec()
-    QUEUE_DEPTH.labels(queue_name=priority_queue).inc()
 
     # Remove from Redis DLQ
     _remove_from_redis_dlq(job_id)

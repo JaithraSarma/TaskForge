@@ -7,18 +7,15 @@ to update Prometheus gauges and counters in real time.
 
 import logging
 
-from celery import Task
 from celery.signals import (
     setup_logging,
     task_postrun,
-    task_prerun,
-    task_retry,
     worker_process_init,
-    worker_shutdown,
+    worker_process_shutdown,
 )
 
 from app.logging_config import configure_logging
-from app.metrics import ACTIVE_WORKERS, QUEUE_DEPTH
+from app.metrics import ACTIVE_WORKERS
 
 logger = logging.getLogger(__name__)
 
@@ -41,29 +38,26 @@ def on_worker_init(**kwargs: object) -> None:
     logger.info("Worker process initialized")
 
 
-@worker_shutdown.connect
-def on_worker_shutdown(**kwargs: object) -> None:
-    """Decrement active worker gauge when a worker process shuts down."""
-    ACTIVE_WORKERS.dec()
+@worker_process_shutdown.connect
+def on_worker_process_shutdown(**kwargs: object) -> None:
+    """Clean up this worker process's metric files on exit.
+
+    Without this, dead worker processes keep contributing to the livesum gauges
+    (active_workers), so the count accumulates across restarts instead of
+    reflecting the live workers.
+    """
+    import os
+
+    if os.environ.get("PROMETHEUS_MULTIPROC_DIR"):
+        # Remove this process's metric files outright. Do NOT also call dec(),
+        # which would recreate the file at -1 and leave a stale negative sample.
+        from prometheus_client import multiprocess
+
+        multiprocess.mark_process_dead(os.getpid())
+    else:
+        # Single-process mode: just decrement the in-process gauge.
+        ACTIVE_WORKERS.dec()
     logger.info("Worker process shutting down")
-
-
-@task_prerun.connect
-def on_task_prerun(sender: object = None, **kwargs: object) -> None:
-    """Decrement queue depth when a task starts executing (it's been dequeued)."""
-    task = kwargs.get("task")
-    if isinstance(task, Task):
-        queue = getattr(task.request, "delivery_info", {}).get("routing_key", "default")
-        QUEUE_DEPTH.labels(queue_name=queue).dec()
-
-
-@task_retry.connect
-def on_task_retry(sender: object = None, **kwargs: object) -> None:
-    """Increment queue depth when a task is retried (it's put back in the queue)."""
-    task = kwargs.get("task")
-    if isinstance(task, Task):
-        queue = getattr(task.request, "delivery_info", {}).get("routing_key", "default")
-        QUEUE_DEPTH.labels(queue_name=queue).inc()
 
 
 @task_postrun.connect
