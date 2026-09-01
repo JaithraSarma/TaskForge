@@ -66,7 +66,9 @@ PostgreSQL is the source of truth for job state; Redis only holds in-flight queu
 ## Why it's built this way
 
 - **`task_acks_late=True` + `task_reject_on_worker_lost=True`** (`worker/celery_app.py`) — Celery's default is to ack (delete) a message before running it, so a worker that gets OOM-killed mid-task loses the job silently. Acking late means the message stays on the broker until the task actually finishes; if the worker dies, Redis redelivers it to another worker instead of dropping it.
-- **Commit before enqueue** (`app/api/router.py::submit_job`) — the job row is committed to PostgreSQL as `pending` *before* the Celery task is published. Enqueuing first opens a race where a fast worker dequeues the task and queries the row before the API's transaction has committed, finds nothing, and drops the job. Persisting first makes the row durable and readable before the task can possibly run.
+- **Commit before enqueue** (`app/api/router.py::submit_job`, `app/api/dlq.py`) — the job row is committed to PostgreSQL as `pending` *before* the Celery task is published. Enqueuing first opens a race where a fast worker dequeues the task and queries the row before the API's transaction has committed, finds nothing, and drops the job. Persisting first makes the row durable and readable before the task can possibly run.
+- **Broker visibility timeout** (`worker/celery_app.py`) — with the Redis broker, a task whose worker is lost is only redelivered after the visibility timeout, which defaults to one hour. It's set to 600s (above the 300s hard time limit) so an ungracefully killed task (hard-limit `SIGKILL`, OOM) is redelivered within minutes, while a legitimately long task is never redelivered while still running.
+- **Advisory-locked schema init** (`app/database.py::init_db`) — with `--workers 2`, both API processes run `create_all` and race on creating the `job_status` enum type. A PostgreSQL advisory lock serializes them; SQLite (tests) has no advisory locks and needs none.
 - **asyncpg for the API, psycopg2 for the workers** — the API is an async FastAPI app (`app/database.py` uses `create_async_engine` + asyncpg) so a slow query doesn't block the event loop. Celery's prefork worker pool is synchronous, so `worker/tasks.py` uses a plain psycopg2 engine instead — mixing an async driver into a sync worker process doesn't work. Two separate `DATABASE_URL` / `DATABASE_URL_SYNC` settings keep this explicit rather than papered over.
 - **Priority routing over a single queue** (`app/api/router.py::_priority_to_queue`) — numeric priority 1-10 is mapped to `high`/`default`/`low` Celery queues at submit time, so a burst of low-priority `data_export` jobs can't starve time-sensitive `email_notification` jobs.
 - **Exponential backoff with jitter** (`worker/tasks.py::process_job`) — retry delay is `2^retry_count * retry_base_delay + random(0, 1)`. Plain exponential backoff still causes every failed job to retry in lockstep; the jitter term spreads retries out so a downstream outage doesn't get hit by a synchronized thundering herd when it comes back.
@@ -80,8 +82,8 @@ PostgreSQL is the source of truth for job state; Redis only holds in-flight queu
 
 | Layer | Technology |
 |---|---|
-| API framework | FastAPI 0.115, Uvicorn, Pydantic v2 |
-| Task queue | Celery 5.4, Redis 7 (broker + result backend + DLQ) |
+| API framework | FastAPI, Uvicorn, Pydantic v2 |
+| Task queue | Celery 5, Redis 7 (broker + result backend + DLQ) |
 | Database | PostgreSQL 16, SQLAlchemy 2.0 (asyncpg for the API, psycopg2 for workers), Alembic |
 | Metrics | prometheus-client, prometheus-fastapi-instrumentator, Prometheus, Grafana |
 | Monitoring UI | Flower (Celery task/worker inspector) |
