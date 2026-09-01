@@ -1,8 +1,12 @@
 # FastAPI & ASGI
-fastapi==0.115.6
+fastapi==0.141.1
+starlette==1.6.0
 uvicorn[standard]==0.34.0
 pydantic==2.10.4
 pydantic-settings==2.7.1
+
+# msgpack (transitive dep of celery/redis) - pin to patch a HIGH CVE
+msgpack>=1.2.1
 
 # Database - API (async)
 sqlalchemy==2.0.36
@@ -18,7 +22,7 @@ redis==5.2.1
 
 # Prometheus metrics
 prometheus-client==0.21.1
-prometheus-fastapi-instrumentator==7.0.2
+prometheus-fastapi-instrumentator==8.1.0
 
 # HTTP client (for load test / seed script)
 httpx==0.28.1

@@ -26,6 +26,14 @@ RUN apt-get update && \
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 RUN pip install --no-cache-dir -r requirements.txt
+# Re-upgrade setuptools after the requirements install so a transitive resolve
+# during that install cannot silently pull it back down to a vulnerable version.
+RUN pip install --no-cache-dir --upgrade 'setuptools>=78.1.1'
+# pip vendors its own (currently outdated) copies of msgpack/setuptools for
+# internal use (HTTP caching, build isolation) - these show up as HIGH CVEs in
+# scans even though nothing in this app imports pip at runtime. Remove pip
+# itself once all dependencies are installed to drop that vendored code.
+RUN pip uninstall -y pip
 
 # -- Stage 2: Application --
 FROM base AS app
