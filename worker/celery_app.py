@@ -31,6 +31,10 @@ celery_app.conf.update(
     # If a worker is lost (e.g., OOM-killed), reject the task so the broker
     # can re-deliver it rather than acknowledging it as successful.
     task_reject_on_worker_lost=True,
+    # Redelivery for ungracefully-lost tasks (hard-limit SIGKILL, OOM). Must be
+    # greater than task_time_limit so a legitimately long task is never
+    # redelivered while still running.
+    broker_transport_options={"visibility_timeout": 600},
     # -- Timeouts --
     task_time_limit=300,  # hard kill after 5 minutes
     task_soft_time_limit=240,  # raise SoftTimeLimitExceeded after 4 minutes
