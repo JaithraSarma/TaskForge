@@ -15,6 +15,7 @@ WORKDIR /app
 
 # Install system dependencies (psycopg2 needs libpq)
 RUN apt-get update && \
+    apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
         libpq-dev \
         gcc \
@@ -23,6 +24,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 RUN pip install --no-cache-dir -r requirements.txt
 
 # -- Stage 2: Application --

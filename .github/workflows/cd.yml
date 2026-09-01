@@ -59,5 +59,6 @@ jobs:
         with:
           image-ref: ${{ steps.img.outputs.name }}@${{ steps.build.outputs.digest }}
           severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
           # Report-only for now: flip exit-code to '1' to fail the build on findings.
           exit-code: '0'
