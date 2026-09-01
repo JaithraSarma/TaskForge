@@ -10,6 +10,7 @@ from typing import cast
 import redis
 from prometheus_client import Counter, Gauge, Histogram
 from prometheus_client.core import GaugeMetricFamily
+from prometheus_client.registry import Collector
 
 from app.config import get_settings
 
@@ -70,7 +71,7 @@ ACTIVE_WORKERS = Gauge(
 )
 
 
-class QueueDepthCollector:
+class QueueDepthCollector(Collector):
     """Expose queue depth by reading the broker's Redis list lengths at scrape time.
 
     This is the broker's own source of truth, so it stays correct across retries
