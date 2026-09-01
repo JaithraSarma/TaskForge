@@ -45,6 +45,14 @@ spec:
                 secretKeyRef:
                   name: taskforge-db-secret
                   key: POSTGRES_PASSWORD
+          # Same emptyDir as the API pod: the shared ConfigMap sets
+          # PROMETHEUS_MULTIPROC_DIR, and app.metrics (imported transitively
+          # via worker.signals) creates its multiprocess mmap files there at
+          # import time, so the directory must exist even though the worker
+          # doesn't serve /metrics itself.
+          volumeMounts:
+            - name: prometheus-multiproc
+              mountPath: /prometheus_multiproc
           # No HTTP port to probe; use celery's own ping over the broker
           # connection to confirm the worker process is alive and responsive.
           livenessProbe:
@@ -64,3 +72,6 @@ spec:
             limits:
               cpu: 500m
               memory: 512Mi
+      volumes:
+        - name: prometheus-multiproc
+          emptyDir: {}
